@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poller
+  namespace: ttc
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # never run 2 pollers at once
+  selector:
+    matchLabels:
+      app: poller
+  template:
+    metadata:
+      labels:
+        app: poller
+    spec:
+      containers:
+        - name: poller
+          image: ghcr.io/polarspetroll/ttc-ghost-bus:latest
+          command: ["/app/poller"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ghost-db
+                  key: DATABASE_URL
+            - name: POLL_INTERVAL
+              value: 30s
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

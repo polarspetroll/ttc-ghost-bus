@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ghost
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: tidy
+        run: go mod tidy
+
+      # commit go.sum back if tidy changed it, only on main
+      - name: commit go.sum
+        if: github.event_name == 'push'
+        run: |
+          if ! git diff --quiet -- go.mod go.sum || [ -n "$(git status --porcelain go.sum)" ]; then
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add go.mod go.sum
+            git commit -m "update go.sum"
+            git push
+          fi
+
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: sql runs on a real postgres
+        env:
+          PGPASSWORD: test
+        run: |
+          psql -h localhost -U postgres -d ghost -v ON_ERROR_STOP=1 -f sql/schema.sql
+          psql -h localhost -U postgres -d ghost -v ON_ERROR_STOP=1 -f sql/aggregate.sql
+          psql -h localhost -U postgres -d ghost -v ON_ERROR_STOP=1 -f sql/ghost_report.sql
+
+  image:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    env:
+      KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: skip if no cluster configured
+        if: env.KUBECONFIG_DATA == ''
+        run: echo "no KUBECONFIG secret, skipping deploy"
+      - name: kubectl apply
+        if: env.KUBECONFIG_DATA != ''
+        run: |
+          echo "$KUBECONFIG_DATA" > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+          kubectl kustomize deploy/k8s \
+            | sed "s#ttc-ghost-bus:latest#ttc-ghost-bus:${GITHUB_SHA}#g" \
+            | kubectl apply -f -
+          kubectl -n ttc rollout status deployment/poller --timeout=120s

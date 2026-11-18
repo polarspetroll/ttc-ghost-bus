@@ -1,0 +1,67 @@
+# loads static gtfs and builds the next 7 days of scheduled trips
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: loader
+  namespace: ttc
+spec:
+  schedule: "0 4 * * *"
+  timeZone: America/Toronto
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: loader
+              image: ghcr.io/polarspetroll/ttc-ghost-bus:latest
+              command: ["/app/loader", "-days", "7"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ghost-db
+                      key: DATABASE_URL
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+---
+# after the last night trips end, build trip_coverage and drop old raw data
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aggregate
+  namespace: ttc
+spec:
+  schedule: "30 5 * * *"
+  timeZone: America/Toronto
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: aggregate
+              image: ghcr.io/polarspetroll/ttc-ghost-bus:latest
+              command: ["psql", "$(DATABASE_URL)", "-v", "ON_ERROR_STOP=1", "-f", "/app/sql/aggregate.sql"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ghost-db
+                      key: DATABASE_URL
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi

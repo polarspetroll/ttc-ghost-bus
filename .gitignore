@@ -1,0 +1,9 @@
+kubeconfig*
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+docs/data/
+/poller
+/loader
+/feed_check
